@@ -2,7 +2,7 @@
 @AccessControl.authorizationCheck: #NOT_REQUIRED
 @AbapCatalog.sqlViewName: 'ZC_DUPVINV12M'
 @EndUserText.label: 'Duplicate vendor invoices in last 12 months'
-define view zai__financial_accounting
+define view entity zai__financial_accounting
   as select from bkpf as h
     inner join bseg as i
       on  i.mandt = h.mandt
