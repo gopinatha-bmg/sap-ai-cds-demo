@@ -13,29 +13,39 @@ define view ZC_DupVendorInvoice12M
       on  v.mandt = i.mandt
       and v.lifnr = i.lifnr
 {
-  key h.bukrs                                as CompanyCode,
-  key h.belnr                                as AccountingDocument,
-  key h.gjahr                                as FiscalYear,
-      h.blart                                as DocumentType,
-      h.bldat                                as DocumentDate,
-      h.budat                                as PostingDate,
-      h.xblnr                                as ReferenceDocument,
-      i.lifnr                                as Vendor,
-      v.name1                                as VendorName,
-      i.wrbtr                                as AmountInDocumentCurrency,
-      i.dmbtr                                as AmountInCompanyCodeCurrency,
-      i.shkzg                                as DebitCreditCode,
-      i.waers                                as DocumentCurrency
+  key h.bukrs                                    as CompanyCode,
+  key h.belnr                                    as AccountingDocument,
+  key h.gjahr                                    as FiscalYear,
+      h.budat                                    as PostingDate,
+      h.bldat                                    as DocumentDate,
+      h.blart                                    as DocumentType,
+      h.xblnr                                    as ReferenceDocumentNumber,
+      i.lifnr                                    as Vendor,
+      v.name1                                    as VendorName,
+      i.wrbtr                                    as AmountInDocumentCurrency,
+      i.dmbtr                                    as AmountInCompanyCodeCurrency,
+      i.waers                                    as DocumentCurrency,
+      cast( 'X' as abap.char(1) )                as DuplicateFlag
 }
 where
-      h.budat >= add_days( $session.system_date, -365 ) // TODO: replace with add_months(...,-12) if supported; 365 days is an approximation
-  and h.bstat = ''
-  // TODO: confirm whether restricting to direct FI postings only is intended; AWTYP = '' can exclude valid invoice origins
-  and h.awtyp = ''
-  // Approximation only: vendor-related FI items, not a definitive invoice-posting classifier.
+      h.budat >= add_days( $session.system_date, -365 )
   and i.lifnr <> ''
-  and i.koart = 'K'
-  and i.wrbtr > 0
+  and h.bstat = ''
+  and h.blart in ( 'KR', 'RE' ) // TODO: client-specific example only; confirm invoice document types for this system
+  and i.wrbtr > 0               // heuristic only; consider tightening with posting semantics if required
+  and i.buzei = (
+    select from bseg as i0
+    {
+      min( i0.buzei )
+    }
+    where
+          i0.mandt = i.mandt
+      and i0.bukrs = i.bukrs
+      and i0.belnr = i.belnr
+      and i0.gjahr = i.gjahr
+      and i0.lifnr = i.lifnr
+      and i0.wrbtr > 0
+  )
   and exists (
     select from bkpf as h2
       inner join bseg as i2
@@ -47,19 +57,20 @@ where
       h2.belnr
     }
     where
-          h2.mandt = h.mandt
-      and h2.budat >= add_days( $session.system_date, -365 ) // TODO: replace with add_months(...,-12) if supported
+          h2.budat >= add_days( $session.system_date, -365 )
       and h2.bstat = ''
-      and h2.awtyp = ''
-      and i2.koart = 'K'
+      and h2.blart in ( 'KR', 'RE' )
       and i2.lifnr = i.lifnr
+      and i2.wrbtr > 0
+      and i2.wrbtr = i.wrbtr
       and h2.xblnr = h.xblnr
       and h2.bldat = h.bldat
-      and i2.wrbtr = i.wrbtr
-      and i2.wrbtr > 0
       and (
-             h2.bukrs <> h.bukrs
-          or h2.belnr <> h.belnr
-          or h2.gjahr <> h.gjahr
+            h2.bukrs <> h.bukrs
+         or h2.belnr <> h.belnr
+         or h2.gjahr <> h.gjahr
       )
-  );
+  )
+// Assumption: duplicate logic uses vendor + reference number (BKPF-XBLNR) + invoice/document date (BKPF-BLDAT) + amount.
+// This revision removes line-item projection and restricts to one vendor line per document to align better with document-level grain.
+// For production-scale performance, prefer a layered CDS design: aggregate duplicate candidate groups first, then join back to BKPF/BSEG.
