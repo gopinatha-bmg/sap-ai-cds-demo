@@ -1,53 +1,73 @@
-@AbapCatalog.sqlViewName: 'ZVDUPVINVEX'
-@EndUserText.label: 'Duplicate vendor invoices'
-define view Z_I_DuplicateVendorInvoices
-  as select from rbkp as inv
-    inner join lfa1 as ven
-      on ven.lifnr = inv.lifnr
+@OData.publish: true
+@AccessControl.authorizationCheck: #NOT_REQUIRED
+@AbapCatalog.sqlViewName: 'ZC_DUPVINV365'
+@EndUserText.label: 'Duplicate vendor invoices in last 365 days'
+define view ZC_DupVendorInvoice365
+  as select from bkpf as h
+    inner join bseg as i
+      on  i.mandt = h.mandt
+      and i.bukrs = h.bukrs
+      and i.belnr = h.belnr
+      and i.gjahr = h.gjahr
+    left outer join lfa1 as v
+      on  v.mandt = i.mandt
+      and v.lifnr = i.lifnr
 {
-  key inv.bukrs      as CompanyCode,
-  key inv.lifnr      as Vendor,
-  key inv.xblnr      as ReferenceDocumentNumber,
-  key inv.bldat      as InvoiceDate,
-  key inv.rmwwr      as InvoiceAmount,
-  key inv.waers      as Currency,
-  key inv.belnr      as InvoiceDocumentNumber,
-  key inv.gjahr      as FiscalYear,
-
-      inv.budat      as PostingDate,
-      inv.blart      as DocumentType,
-      inv.usnam      as EnteredByUser,
-      ven.name1      as VendorName
-
+  key h.bukrs                          as CompanyCode,
+  key h.belnr                          as AccountingDocument,
+  key h.gjahr                          as FiscalYear,
+      h.budat                          as PostingDate,
+      h.bldat                          as DocumentDate,
+      h.blart                          as DocumentType,
+      h.usnam                          as CreatedByUser,
+      i.lifnr                          as Vendor,
+      v.name1                          as VendorName,
+      h.xblnr                          as InvoiceReference,
+      i.wrbtr                          as AmountInDocumentCurrency,
+      i.dmbtr                          as AmountInCompanyCodeCurrency,
+      i.waers                          as DocumentCurrency
 }
 where
-      inv.bukrs in ( '1000', '2000' )
-  and inv.budat >= add_days( $session.system_date, -180 )
-  and inv.rmwwr >= 1000
-  and inv.stblg = ''          // exclude reversed documents
-  and inv.rbstat = '5'        // TODO: verify/document RBKP status value for "posted" in your release; replace with configurable mapping if needed
-  and inv.xblnr <> ''         // reference invoice number required for duplicate check
-  and exists (
-    select from rbkp as dup
+      h.budat >= add_days( $session.system_date, -365 )
+  and i.lifnr is not null
+  // TODO: confirm whether BKPF-XBLNR is the intended invoice reference for your process.
+  and h.xblnr is not null
+  and h.xblnr <> ''
+  // Restrict to one representative vendor line per accounting document to keep document grain.
+  and not exists (
+    select from bseg as iprev
     {
-      dup.belnr
+      iprev.buzei
     }
     where
-          dup.bukrs = inv.bukrs
-      and dup.lifnr = inv.lifnr
-      and dup.xblnr = inv.xblnr
-      and dup.bldat = inv.bldat
-      and dup.rmwwr = inv.rmwwr
-      and dup.waers = inv.waers
-      and dup.stblg = ''
-      and dup.rbstat = '5'    // TODO: same note as above
-      and dup.belnr <> inv.belnr
+          iprev.mandt = i.mandt
+      and iprev.bukrs = i.bukrs
+      and iprev.belnr = i.belnr
+      and iprev.gjahr = i.gjahr
+      and iprev.lifnr = i.lifnr
+      and iprev.buzei < i.buzei
+  )
+  // Duplicate rule at document level: same vendor/reference/document date/amount within the time window.
+  and exists (
+    select from bseg as i2
+      inner join bkpf as h2
+        on  h2.mandt = i2.mandt
+        and h2.bukrs = i2.bukrs
+        and h2.belnr = i2.belnr
+        and h2.gjahr = i2.gjahr
+    {
+      i2.belnr
+    }
+    where
+          i2.mandt = i.mandt
+      and i2.lifnr = i.lifnr
+      and h2.xblnr = h.xblnr
+      and h2.bldat = h.bldat
+      and i2.wrbtr = i.wrbtr
+      and h2.budat >= add_days( $session.system_date, -365 )
+      and (
+             i2.bukrs <> i.bukrs
+          or i2.belnr <> i.belnr
+          or i2.gjahr <> i.gjahr
+      )
   );
-// Assumption: use MM invoice header table RBKP as the primary source for posted vendor invoice duplicates.
-// This means the control covers MM/LIV invoice documents, not all FI vendor invoices from BKPF/BSEG.
-// Duplicate key chosen per brief: company code, vendor, reference number (XBLNR), invoice date, amount, currency.
-// Current design returns one row per duplicate invoice document.
-// For better performance/maintainability on large volumes, prefer a layered design:
-// 1) base filtered RBKP view
-// 2) duplicate-group aggregation view with count(*) > 1
-// 3) final exception view joining base rows to duplicate groups.
