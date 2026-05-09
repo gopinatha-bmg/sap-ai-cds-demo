@@ -1,8 +1,8 @@
 @OData.publish: true
 @AccessControl.authorizationCheck: #NOT_REQUIRED
-@AbapCatalog.sqlViewName: 'ZC_DUPVINV365'
-@EndUserText.label: 'Duplicate vendor invoices in last 365 days'
-define view ZC_DupVendorInvoice365
+@AbapCatalog.sqlViewName: 'ZC_DUPVINV12M'
+@EndUserText.label: 'Duplicate vendor invoices in last 12 months'
+define view ZC_DupVendorInvoice12M
   as select from bkpf as h
     inner join bseg as i
       on  i.mandt = h.mandt
@@ -13,43 +13,29 @@ define view ZC_DupVendorInvoice365
       on  v.mandt = i.mandt
       and v.lifnr = i.lifnr
 {
-  key h.bukrs                         as CompanyCode,
-  key h.belnr                         as AccountingDocument,
-  key h.gjahr                         as FiscalYear,
-      h.budat                         as PostingDate,
-      h.bldat                         as DocumentDate,
-      h.blart                         as DocumentType,
-      h.xblnr                         as ReferenceDocument,
-      i.lifnr                         as Vendor,
-      v.name1                         as VendorName,
-      i.wrbtr                         as AmountInDocumentCurrency,
-      i.dmbtr                         as AmountInCompanyCodeCurrency,
-      i.waers                         as DocumentCurrency,
-      i.shkzg                         as DebitCreditCode,
-      cast( 'X' as abap.char(1) )     as DuplicateFlag
+  key h.bukrs                                as CompanyCode,
+  key h.belnr                                as AccountingDocument,
+  key h.gjahr                                as FiscalYear,
+      h.blart                                as DocumentType,
+      h.bldat                                as DocumentDate,
+      h.budat                                as PostingDate,
+      h.xblnr                                as ReferenceDocument,
+      i.lifnr                                as Vendor,
+      v.name1                                as VendorName,
+      i.wrbtr                                as AmountInDocumentCurrency,
+      i.dmbtr                                as AmountInCompanyCodeCurrency,
+      i.shkzg                                as DebitCreditCode,
+      i.waers                                as DocumentCurrency
 }
 where
-      h.bukrs in ( '1000', '2000' )
-  and h.budat >= add_days( $session.system_date, -365 )
-  and h.budat <= $session.system_date
+      h.budat >= add_days( $session.system_date, -365 ) // TODO: replace with add_months(...,-12) if supported; 365 days is an approximation
   and h.bstat = ''
+  // TODO: confirm whether restricting to direct FI postings only is intended; AWTYP = '' can exclude valid invoice origins
+  and h.awtyp = ''
+  // Approximation only: vendor-related FI items, not a definitive invoice-posting classifier.
   and i.lifnr <> ''
-  and h.xblnr <> ''
-  and not exists (
-    select from bseg as iprev
-    {
-      iprev.buzei
-    }
-    where
-          iprev.mandt = i.mandt
-      and iprev.bukrs = i.bukrs
-      and iprev.belnr = i.belnr
-      and iprev.gjahr = i.gjahr
-      and iprev.lifnr = i.lifnr
-      and (
-             iprev.buzei < i.buzei
-          )
-  )
+  and i.koart = 'K'
+  and i.wrbtr > 0
   and exists (
     select from bkpf as h2
       inner join bseg as i2
@@ -61,40 +47,19 @@ where
       h2.belnr
     }
     where
-          h2.bukrs = h.bukrs
-      and h2.budat >= add_days( $session.system_date, -365 )
-      and h2.budat <= $session.system_date
+          h2.mandt = h.mandt
+      and h2.budat >= add_days( $session.system_date, -365 ) // TODO: replace with add_months(...,-12) if supported
       and h2.bstat = ''
+      and h2.awtyp = ''
+      and i2.koart = 'K'
       and i2.lifnr = i.lifnr
       and h2.xblnr = h.xblnr
       and h2.bldat = h.bldat
       and i2.wrbtr = i.wrbtr
-      and i2.waers = i.waers
-      and not exists (
-        select from bseg as i2prev
-        {
-          i2prev.buzei
-        }
-        where
-              i2prev.mandt = i2.mandt
-          and i2prev.bukrs = i2.bukrs
-          and i2prev.belnr = i2.belnr
-          and i2prev.gjahr = i2.gjahr
-          and i2prev.lifnr = i2.lifnr
-          and (
-                 i2prev.buzei < i2.buzei
-              )
-      )
+      and i2.wrbtr > 0
       and (
-             h2.belnr <> h.belnr
+             h2.bukrs <> h.bukrs
+          or h2.belnr <> h.belnr
           or h2.gjahr <> h.gjahr
-          )
-  )
-// Conservative assumptions:
-// - Duplicate logic uses vendor + BKPF-XBLNR (invoice reference) + BKPF-BLDAT (invoice date) + BSEG-WRBTR/WAERS (amount/currency).
-// - Restricted to company codes 1000 and 2000 and posting date within last 365 days.
-// - Output is one row per accounting document by keeping only the first vendor line (lowest BUZEI) per document.
-// - TODO: If your posting model can contain multiple vendor lines per invoice document, replace this heuristic with a layered base CDS
-//         that derives one canonical vendor/amount tuple per document before duplicate detection.
-// - TODO: If needed, further narrow by invoice-relevant BKPF-BLART values to reduce false positives.
-;
+      )
+  );
