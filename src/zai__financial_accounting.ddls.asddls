@@ -1,111 +1,65 @@
 @OData.publish: true
 @AccessControl.authorizationCheck: #NOT_REQUIRED
-@AbapCatalog.sqlViewName: 'ZC_DUPVINVYTD'
-@EndUserText.label: 'Duplicate vendor invoices in current fiscal year to date'
-define view ZC_DupVendorInvoiceYTD
-  as select from
-    (
-      select from bkpf as h
-        inner join bseg as i
-          on  i.bukrs = h.bukrs
-          and i.belnr = h.belnr
-          and i.gjahr = h.gjahr
-      {
-        key h.bukrs                    as CompanyCode,
-        key h.belnr                    as AccountingDocument,
-        key h.gjahr                    as FiscalYear,
-            max( h.budat )             as PostingDate,
-            max( h.bldat )             as DocumentDate,
-            max( h.blart )             as DocumentType,
-            i.lifnr                    as Vendor,
-            max( h.xblnr )             as ReferenceDocument,
-            i.wrbtr                    as AmountInDocumentCurrency,
-            max( i.dmbtr )             as AmountInCompanyCodeCurrency,
-            max( i.waers )             as DocumentCurrency,
-            max( i.shkzg )             as DebitCreditIndicator
-      }
-      where
-            h.budat >= concat( cast( h.gjahr as abap.char(4) ), '0101' )
-        and h.budat <= $session.system_date
-        and i.lifnr <> ''
-        and h.xblnr <> ''
-        and i.wrbtr > 0
-        // Approximation only: derives year start from BKPF-GJAHR as calendar YYYY0101.
-        // If "fiscal year" must follow fiscal year variant, replace with a fiscal calendar mapping CDS/table.
-        // Generic default only: this does not hard-code client-specific document types or payment methods.
-      group by
-            h.bukrs,
-            h.belnr,
-            h.gjahr,
-            i.lifnr,
-            i.wrbtr
-    ) as doc
+@AbapCatalog.sqlViewName: 'ZC_DUPVINV90D'
+@EndUserText.label: 'Duplicate vendor invoice documents in last 90 days'
+define view ZC_DupVendorInvoice90D
+  as select from bkpf as h
+    inner join bseg as i
+      on  i.mandt = h.mandt
+      and i.bukrs = h.bukrs
+      and i.belnr = h.belnr
+      and i.gjahr = h.gjahr
     inner join lfa1 as v
-      on  v.lifnr = doc.Vendor
-    inner join
-    (
-      select from
-        (
-          select from bkpf as h2
-            inner join bseg as i2
-              on  i2.bukrs = h2.bukrs
-              and i2.belnr = h2.belnr
-              and i2.gjahr = h2.gjahr
-          {
-            key h2.bukrs               as CompanyCode,
-            key h2.belnr               as AccountingDocument,
-            key h2.gjahr               as FiscalYear,
-                i2.lifnr               as Vendor,
-                h2.xblnr               as ReferenceDocument,
-                h2.bldat               as InvoiceDate,
-                i2.wrbtr               as AmountInDocumentCurrency
-          }
-          where
-                h2.budat >= concat( cast( h2.gjahr as abap.char(4) ), '0101' )
-            and h2.budat <= $session.system_date
-            and i2.lifnr <> ''
-            and h2.xblnr <> ''
-            and i2.wrbtr > 0
-          group by
-                h2.bukrs,
-                h2.belnr,
-                h2.gjahr,
-                i2.lifnr,
-                h2.xblnr,
-                h2.bldat,
-                i2.wrbtr
-        ) as base
-      {
-            base.Vendor                as Vendor,
-            base.ReferenceDocument     as ReferenceDocument,
-            base.InvoiceDate           as InvoiceDate,
-            base.AmountInDocumentCurrency as AmountInDocumentCurrency,
-            count( * )                 as DuplicateCount
-      }
-      group by
-            base.Vendor,
-            base.ReferenceDocument,
-            base.InvoiceDate,
-            base.AmountInDocumentCurrency
-      having count( * ) > 1
-    ) as dup
-      on  dup.Vendor                   = doc.Vendor
-      and dup.ReferenceDocument        = doc.ReferenceDocument
-      and dup.InvoiceDate              = doc.DocumentDate
-      and dup.AmountInDocumentCurrency = doc.AmountInDocumentCurrency
+      on  v.mandt = i.mandt
+      and v.lifnr = i.lifnr
 {
-  key doc.CompanyCode                  as CompanyCode,
-  key doc.AccountingDocument           as AccountingDocument,
-  key doc.FiscalYear                   as FiscalYear,
-      doc.PostingDate                  as PostingDate,
-      doc.DocumentDate                 as DocumentDate,
-      doc.DocumentType                 as DocumentType,
-      doc.Vendor                       as Vendor,
-      v.name1                          as VendorName,
-      doc.ReferenceDocument            as ReferenceDocument,
-      doc.AmountInDocumentCurrency     as AmountInDocumentCurrency,
-      doc.AmountInCompanyCodeCurrency  as AmountInCompanyCodeCurrency,
-      doc.DocumentCurrency             as DocumentCurrency,
-      doc.DebitCreditIndicator         as DebitCreditIndicator,
-      dup.DuplicateCount               as DuplicateCount
+  key h.bukrs                              as CompanyCode,
+  key h.belnr                              as AccountingDocument,
+  key h.gjahr                              as FiscalYear,
+      h.budat                              as PostingDate,
+      h.bldat                              as DocumentDate,
+      h.blart                              as DocumentType,
+      h.usnam                              as EnteredBy,
+      i.lifnr                              as Vendor,
+      v.name1                              as VendorName,
+      i.xblnr                              as InvoiceReference,
+      i.wrbtr                              as AmountInDocumentCurrency,
+      i.dmbtr                              as AmountInCompanyCodeCurrency,
+      i.waers                              as DocumentCurrency,
+      i.shkzg                              as DebitCreditCode
 }
+where
+      h.budat >= add_days( $session.system_date, -90 )
+  and i.lifnr <> ''
+  and i.wrbtr > 0
+  and exists (
+    select from bseg as d
+      inner join bkpf as dh
+        on  dh.mandt = d.mandt
+        and dh.bukrs = d.bukrs
+        and dh.belnr = d.belnr
+        and dh.gjahr = d.gjahr
+    {
+      d.belnr
+    }
+    where
+          d.mandt = i.mandt
+      and d.lifnr = i.lifnr
+      and d.xblnr = i.xblnr
+      and dh.bldat = h.bldat
+      and d.wrbtr = i.wrbtr
+      and d.wrbtr > 0
+      and dh.budat >= add_days( $session.system_date, -90 )
+      and not (
+            d.bukrs = i.bukrs
+        and d.belnr = i.belnr
+        and d.gjahr = i.gjahr
+      )
+  )
+// Conservative assumptions:
+// 1) Duplicate match uses vendor + invoice reference (BSEG-XBLNR) + document date (BKPF-BLDAT) + amount.
+//    If your process stores the supplier invoice date in another standard/custom field, replace BLDAT accordingly.
+// 2) Output is one row per accounting document, aligned to the requested grain; line item is intentionally excluded.
+// 3) LFA1 join is retained only for VendorName display; remove it in a performance-focused base view if not needed.
+// 4) No company-code restriction was provided; add an org filter if needed for performance/governance.
+;
